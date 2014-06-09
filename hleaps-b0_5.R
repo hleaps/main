@@ -61,6 +61,8 @@ hpmodsetup <- function(formula, data, subset, weights, na.action, offset, ...) {
     inci <- crossprod(atts$factor) == atts$order # incidence matrix for terms
     mods <<- array(FALSE, c(nrow(inci), 1))
     rownames(mods) <<- rownames(inci)
+#    for (j in 1:ncol(inci))
+#        mods <- cbind(mods, t(unique(t(array(inci[,j], dim(mods)) | mods))))
     mods <<- t(mods)
     rownames(mods) <<- mods %*% 2^((seq_len(ncol(inci)))-1)
     res  <<- list(call=cl, incidence=inci, models=mods,
@@ -117,7 +119,7 @@ hleaps <- function (formula,
         lm.out <- lm(formula, data=data)
         }
     terms <- attr(lm.out$terms,"term.labels")
-  #  termList <- terms
+    termList <- terms
     num.terms <<- length(terms)
 
     #   Check that the number of terms is 30 or lower
@@ -184,7 +186,7 @@ hleaps <- function (formula,
         greedy=FALSE
         }
 
-    message ("Parameters checked")
+#    message ("Parameters checked")
 
     #  Create list of models and grouped subsets of models using 
     #   Doug Bates's code     And get the needed data
@@ -198,8 +200,6 @@ hleaps <- function (formula,
     mods  <- hp$models
     X     <<- hp$X
     dfTotal <<- nrow(X)
-
-    # set up incidence matrix and initialize terms list
     incidence <- hp$incidence
     termLabels <- attr(attr(hp$frame,"terms"),"term.labels")
     terms <- seq(1,length(termLabels))
@@ -215,24 +215,28 @@ hleaps <- function (formula,
     SSTotal <<- sum(eff.list^2)
     colAssign <<- attr(X,"assign")
 
-    message ("QR for total model complete")
+#    message ("QR for total model complete")
 
 
-    #   tables to record the Sum of Squares, size, Terms and df for each model
+    #   table to record the Sum of Squares for each model
     #
     maxMods <- 2^(num.terms)
     SSMod <<- rep(-1,maxMods)
-    sizeMod <<- rep(0,maxMods)
-    dfMod <- rep(0,maxMods)
+
+# error("stop here")
+
+    #   Matrices to record the best Sum of Squares models
+    #
+    SSModM <<- matrix(rep(-1,nBest*num.terms), nrow=nBest, ncol=num.terms)
+    termsModM <<- matrix(rep(0,nBest*num.terms), nrow=nBest, ncol=num.terms)
 
     #   search models by subsets for best models
     #
     num.models <<- 0
-    num.sets <<- 0
     start.time <<- proc.time()
     outOfTime <<- FALSE
 
-    message ("setup done")
+#    message ("setup done")
 
 
     if (greedy) {
@@ -269,8 +273,10 @@ hleaps <- function (formula,
 
         sets  <- msubs(hp, fr)
         s <- length(sets)
+        num.sets <<- 0
 
         findBest2(s = s, sets = sets, timeOut = timeOut)
+
         }
 
     format.output(minSize, maxSize, nBest, altOut, criteria)
@@ -312,8 +318,20 @@ calcSSMod <- function (setId, sets) {
     }
     j.modIdx <- as.integer(j)
     SSMod[j.modIdx] <<- j.SSMod   
-    sizeMod[j.modIdx] <<- sum(set[j,])
     prior.mod <- i.terms
+
+    # store only best subsets apporach
+    #
+    j.size <- sum(set[j,])
+    if (j.size != 0) {                     # this model null model?
+      if ( ( j.SSMod > ( j.min <- min(SSModM[,j.size]) ) ) &
+           !(j.modIdx %in% termsModM[,j.size]) # this model already recored?
+           ) {                                  
+        j.row <- which(SSModM[,j.size]==j.min)[1]
+        SSModM[j.row,j.size] <<- j.SSMod
+        termsModM[j.row,j.size] <<- j.modIdx
+        }
+      }
   }
 }
 
@@ -339,8 +357,7 @@ findBest2 <- function (s, sets, timeOut) {
 
 ###########################################################################
 #
-#   format the compressed which matrix of subsets. Used to format
-#   alternative output.
+#   format the compressed which matrix of subsets
 #
 
 format.subsets <- function (sdf) {
@@ -361,8 +378,7 @@ format.subsets <- function (sdf) {
       } else {
         end.col <- num.col
       }
-      # alt out formatting for mods
-      sd[row,d.col] <- paste(paste(ifelse(sdf[row,col:end.col]==TRUE,"T",".")), collapse= "") 
+      sd[row,d.col] <- paste(paste(ifelse(sdf[row,col:end.col]==TRUE,"T",".")), collapse= "")
       col <- col+5
       d.col <- d.col+1
     }
@@ -395,9 +411,96 @@ format.subsets <- function (sdf) {
 
 ###########################################################################
 #
+#
 #   format the output
 #
 format.output <- function(minSize, maxSize, nBest, altOut, criteria) {
+  
+  # Get best saved models information
+  #
+  notEmpty <- as.vector( SSModM >= 0 )      # check if null model
+  size <- rep(1:num.terms, each = nBest)[notEmpty]
+  SSMod <<- as.vector(SSModM)[notEmpty]
+  SSRes <- SSTotal - SSMod
+  modId <- as.vector(termsModM)[notEmpty]
+  
+  #   Code to convert index to terms (binary) 
+  #
+  decId <- modId
+  modTerms <- matrix(ncol=num.terms, nrow=length(decId))
+  for (i in num.terms:1) {    
+    modTerms[,i] <- decId >= 2^(i-1)
+    decId <- decId - ifelse(modTerms[,i],2^(i-1),0)
+  }
+  
+  dfMod <- rep(0,length(SSMod))
+  for (i in 1:length(SSMod)) {
+    # 0 is for intercept 
+    i.cols  <- colAssign %in% c(0, modTerms[i,])
+    dfMod[i] <- sum(as.integer(i.cols))
+  }
+  
+  Moddf <- dfMod
+  otherCol <- c("size","SSResid","SSModel")
+  terms.matrix <- modTerms
+  mod.order <- order(SSRes)  
+  
+  RSq <- (SSMod-SSIntercept) / (SSRes+SSMod)
+  
+  # correct if no intercept
+  adjRSq <- 1 - (1 - RSq)*((dfTotal - 1)/(dfTotal-Moddf))
+  
+  if (!altOut) {  # if normal output format
+    
+    #   Check the critera used
+    #
+    if (criteria=="R2") {
+      BSS <- list(which=terms.matrix, label=colnames(mods), 
+                  size=size, Rsquared=RSq)   
+    } else if(criteria=="adjR2"){
+      BSS <- list(which=terms.matrix, label=colnames(mods), 
+                  size=size, adjRsqrd=adjRSq)  
+    } else { 
+      BSS <- list(which=terms.matrix, label=colnames(mods), 
+                  size=size, rss=SSRes)   
+    } 
+    
+  } else {   # otherwise alternate formated output
+    
+    #   compress the which matrix
+    #
+    comp.mod <- format.subsets(terms.matrix)
+    
+    # formate execution info
+    #
+    total.time <- proc.time()[3] - start.time[3]
+    time.usage <- paste("Total number of model subsets examined was ",
+                        num.sets,
+                        " Total run time was ", 
+                        format(total.time,trim = FALSE,digits=7), 
+                        " seconds.")
+    if (criteria=="R2") {
+      modelInfo <- cbind(size, order=mod.order, RSq, 
+                         comp.mod)   
+    } else if(criteria=="adjR2"){
+      modelInfo <- cbind(size, order=mod.order, adjRSq, 
+                         comp.mod)  
+    } else { 
+      modelInfo <- cbind(size, order=mod.order, SSRes, 
+                         comp.mod)     
+    } 
+    BSS <- list(modelInfo=modelInfo, label=colnames(mods),
+                executionInfo=time.usage)
+  }
+}
+
+
+###########################################################################
+#
+#
+#   format the output
+#
+format.output2 <- function(minSize, maxSize, nBest, altOut, criteria) {
   
   #   Order the models based on size of model and SSResid
   #       Then select nBest models of each size
@@ -512,7 +615,7 @@ format.output <- function(minSize, maxSize, nBest, altOut, criteria) {
 #
 calcSSModGred <- function (
   terms                # vector of id numbers for terms in model
-) {
+  ) {
   
   #  Create the list of columns needed for largest model
   #
@@ -524,7 +627,6 @@ calcSSModGred <- function (
   this.X <- X[,i.cols]
   QR <- qr(this.X)
   SS.X <- qr.qty(QR,resp.vec)[1:length(i.cols)]
-  #    num.sets <<- num.sets + 1
   
   #  Calculate the SSModel for each model in the subset
   #
@@ -544,7 +646,15 @@ calcSSModGred <- function (
     #
     i.modIdx <- sum(2^(terms[1:j]-1))
     SSMod[i.modIdx] <<- j.SSMod        
-    sizeMod[i.modIdx] <<- j      # number of terms in model
+    
+    # store only best subsets apporach
+    #
+    if ( ( j.SSMod > ( j.min <- min(SSModM[,j]) ) ) &
+         !(i.modIdx %in% termsModM[,j]) ) { # this model
+      j.row <- which(SSModM[,j]==j.min)[1]
+      SSModM[j.row,j] <<- j.SSMod
+      termsModM[j.row,j] <<- sum(2^(terms[1:j]-1))
+      }
   }
   
 }
@@ -635,9 +745,12 @@ findBest <- function (this.terms,   # ordered list of terms in model
   #   find the best model of the set of dropped free terms
   #   which is the model which is least significant
   #          
+  message(paste("min free: ", names(which(freeSS==min(freeSS))[1])[1]))
+  message(freeSS[which(freeSS == min(freeSS))])
+  message(min(freeSS))
+
   signf.free <- names(which( freeSS == min(freeSS))[1] )[1] 
-  
-  
+  message(signf.free)
   #   If there are terms after dropping, continue dropping
   #   & forcing terms
   #
